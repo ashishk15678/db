@@ -4,6 +4,8 @@ use std::{
     net::TcpStream,
 };
 
+use crate::db::partition::{DataBaseClient, PartitionServer};
+
 #[derive(Debug)]
 pub struct HttpResponse {
     pub status_code: usize,
@@ -22,7 +24,7 @@ impl Display for HttpResponse {
     }
 }
 
-pub fn handleClient(mut stream: TcpStream) -> Result<(), Error> {
+pub async fn handleClient(mut stream: TcpStream) -> Result<(), Error> {
     let mut buffer = [0; 1024];
     stream.read(&mut buffer).unwrap();
 
@@ -58,6 +60,9 @@ pub fn handleClient(mut stream: TcpStream) -> Result<(), Error> {
                 }
                 "/sql" => {
                     let body = "pong\n";
+                    let client = DataBaseClient::new();
+                    let server = &client.servers[1];
+                    //server.data().await;
                     HttpResponse {
                         status_code: 200,
                         protocol: "HTTP/1.1".to_string(),

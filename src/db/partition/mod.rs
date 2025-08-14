@@ -8,6 +8,7 @@ use std::{
     fs::OpenOptions,
     io::Error,
     net::{TcpListener, TcpStream},
+    ops::Deref,
     path::Path,
     process::exit,
     sync::{Arc, Mutex},
@@ -24,14 +25,14 @@ use tokio::{fs, task};
 #[derive(Debug, Clone)]
 pub struct PartitionServer {
     port: usize,
-    data: Option<Arc<Mutex<BTreeMap<String, String>>>>,
+    pub data: Option<Arc<Mutex<BTreeMap<String, String>>>>,
     leader_port: usize,
 }
 
 #[derive(Debug)]
 pub struct DataBaseClient {
-    partitions: u8,
-    servers: Vec<PartitionServer>,
+    pub partitions: u8,
+    pub servers: Vec<PartitionServer>,
     leader: PartitionServer,
     throttle: u32,
 }
@@ -80,7 +81,7 @@ impl PartitionServer {
             let (stream, remote_addr) = listener.accept().unwrap();
             println!("Accepted connection from: {}", remote_addr);
             print!("Handling client now");
-            handleClient(stream)?;
+            handleClient(stream).await?;
         }
 
         #[allow(unreachable_code)]
