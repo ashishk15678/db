@@ -1,0 +1,5 @@
+name = "butterfly_db"
+
+[network]
+port = 4343
+bind_address = "127.0.0.1"
