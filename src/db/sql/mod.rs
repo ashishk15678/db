@@ -1,5 +1,7 @@
 use protobuf::text_format::print_to_string;
 
+pub mod constants;
+pub mod parser;
 pub struct SQL;
 
 impl SQL {

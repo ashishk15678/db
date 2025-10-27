@@ -3,24 +3,18 @@ use crate::{
     log::debug,
 };
 #[allow(unused_imports)]
+use std::env;
 pub mod db;
 pub mod hashing;
 pub mod log;
 
 #[tokio::main]
 async fn main() {
-    let client = DataBaseClient::new();
-    info!("This is another info");
-    error!("Another error");
-    warn!("Another warning");
-    debug("This works ?");
-    client.intialize().await;
+    let args: Vec<String> = env::args().collect();
 
-    let http = HttpResponse {
-        status_code: 200,
-        protocol: String::from("https"),
-        headers: String::from(""),
-        body: String::from(""),
-    };
-    print!("{}", http);
+    if args[0] == "-h" || args[0] == "--host" {
+    } else {
+        let client = DataBaseClient::new();
+        client.intialize().await;
+    }
 }

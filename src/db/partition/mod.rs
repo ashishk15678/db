@@ -36,6 +36,7 @@ pub struct DataBaseClient {
     leader: PartitionServer,
     throttle: u32,
 }
+
 // --------------------------------------------------------------------------------
 // Implementations ----------------------------------------------------------------
 impl PartitionServer {
@@ -146,28 +147,13 @@ impl DataBaseClient {
             leader_port: 1231,
         };
         DataBaseClient {
-            partitions: 4,
+            partitions: 0,
             leader: leader,
             throttle: 20,
-            servers: vec![
-                PartitionServer {
-                    port: 1232,
-                    data: None,
-                    leader_port: 1231,
-                },
-                PartitionServer {
-                    port: 1233,
-                    data: None,
-                    leader_port: 1231,
-                },
-                PartitionServer {
-                    port: 1234,
-                    data: None,
-                    leader_port: 1231,
-                },
-            ],
+            servers: vec![],
         }
     }
+
     pub async fn intialize(&self) {
         // the sole reason for getting &self is to have multiple instances at once
         // and the code can be used like this
