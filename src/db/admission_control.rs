@@ -1,3 +1,4 @@
+use crate::{error, info};
 use std::thread;
 use std::time::Duration;
 use sysinfo::{System, get_current_pid};
@@ -25,11 +26,12 @@ where
             let ram_kb = process.memory();
             let ram_mb = ram_kb as f64 / 1024.0;
 
-            println!(
+            info!(format!(
                 "Monitoring '{}': CPU {:.2}% | RAM {:.2} MB",
                 process_name, cpu_usage, ram_mb
-            );
+            ));
             if cpu_usage > config.resource.max_cpu_percent {
+                error!("Task rejected , exiting");
                 return Err(format!(
                     "Task rejected: CPU usage ({:.2}%) exceeds limit ({:.2}%)",
                     cpu_usage, config.resource.max_cpu_percent

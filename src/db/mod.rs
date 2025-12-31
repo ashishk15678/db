@@ -1,6 +1,10 @@
 pub mod admission_control;
+pub mod catalog;
+pub mod executor;
 pub mod http;
 pub mod pager;
 pub mod partition;
+pub mod pool;
 pub mod process;
 pub mod sql;
+pub mod storage;

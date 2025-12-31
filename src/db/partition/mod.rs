@@ -1,6 +1,8 @@
 use crate::{
     db::http::{HttpResponse, handleClient},
+    error,
     hashing::aes,
+    info, warn,
 };
 use rand::Rng;
 use std::{
@@ -50,11 +52,11 @@ impl PartitionServer {
         // Attempt to bind to the port. The `bind` call itself checks for availability.
         let listener = match TcpListener::bind(addr) {
             Ok(listener) => {
-                println!("Server listening on {}", addr);
+                info!(format!("Server listening on {}", addr));
                 listener
             }
             Err(e) => {
-                eprintln!("Failed to bind to port {}: {}", self.port, e);
+                error!(format!("Failed to bind to port {}: {}", self.port, e));
                 // Propagate the error so the calling function can handle it.
                 // Panicking is often not the best strategy for a recoverable error.
                 return Err(e);
@@ -90,19 +92,6 @@ impl PartitionServer {
     }
 
     async fn leader_initialize() -> Result<(), Error> {
-        let file_path = Path::new("~/data/__leader.db");
-        if let Some(parent) = file_path.parent() {
-            fs::create_dir_all(parent).await?;
-        }
-
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(file_path)?;
-
-        // leader's partition key will always be 1 for simplicity
-        let partition_key = b"1\n";
-        file.write_all(partition_key)?;
         Ok(())
     }
 
@@ -178,10 +167,10 @@ impl DataBaseClient {
             match leader_clone.start().await {
                 Ok(_) => {}
                 Err(err) => {
-                    eprintln!(
-                        "[ERROR] Server at port {} failed to start or crashed. Error: {}",
+                    error!(format!(
+                        "Server at port {} failed to start or crashed. Error: {}",
                         leader_clone.port, err
-                    );
+                    ));
                     exit(127)
                 }
             };
@@ -195,11 +184,11 @@ impl DataBaseClient {
             // The loop doesn't block here; it immediately continues to the next server.
             let task_handle = task::spawn(async move {
                 match server_clone.start().await {
-                    Ok(_) => println!("[INFO] Server at port {} exited.", server_clone.port),
-                    Err(err) => eprintln!(
-                        "[WARN] Server at port {} failed to start or crashed. Error: {}",
+                    Ok(_) => info!(format!("Server at port {} exited.", server_clone.port)),
+                    Err(err) => warn!(format!(
+                        "Server at port {} failed to start or crashed. Error: {}",
                         server_clone.port, err
-                    ),
+                    )),
                 };
             });
             tasks.push(task_handle);

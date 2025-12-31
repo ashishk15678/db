@@ -51,10 +51,14 @@ pub enum Expression {
         else_clause: Option<Box<Expression>>,
     },
     Subquery(Box<Statement>),
-    Column(String),
     QualifiedColumn {
         table: String,
         column: String,
+    },
+    /// Expression with an alias (e.g., COUNT(x) AS count)
+    Alias {
+        expr: Box<Expression>,
+        alias: String,
     },
 }
 impl Tokenizer {
@@ -465,19 +469,10 @@ impl Parser {
         }
     }
 
-    /// Peek at the current token without consuming it
     fn peek(&self) -> &Token {
         self.tokens.get(self.position).unwrap_or(&Token::Eof)
     }
 
-    /// Peek at a token at a specific offset from current position
-    fn peek_offset(&self, offset: usize) -> &Token {
-        self.tokens
-            .get(self.position + offset)
-            .unwrap_or(&Token::Eof)
-    }
-
-    /// Consume and return the current token
     fn consume(&mut self) -> Token {
         if self.position < self.tokens.len() {
             let token = self.tokens[self.position].clone();
@@ -651,12 +646,41 @@ impl Parser {
         let mut projection = Vec::new();
 
         loop {
-            if matches!(self.peek(), Token::Star) {
+            let mut expr = if matches!(self.peek(), Token::Star) {
                 self.consume();
-                projection.push(Expression::Identifier("*".to_string()));
+                Expression::Identifier("*".to_string())
             } else {
-                projection.push(self.parse_expression()?);
+                self.parse_expression()?
+            };
+
+            // Check for AS alias (optional)
+            if matches!(self.peek(), Token::As) {
+                self.consume();
+                if let Token::Identifier(alias) = self.consume() {
+                    expr = Expression::Alias {
+                        expr: Box::new(expr),
+                        alias,
+                    };
+                } else {
+                    return Err(ParseError {
+                        message: "Expected identifier after AS".to_string(),
+                        position: self.position,
+                        line: 0,
+                        column: 0,
+                    });
+                }
             }
+            // Also handle implicit alias (identifier directly after expression)
+            else if matches!(self.peek(), Token::Identifier(_)) && !self.is_keyword() {
+                if let Token::Identifier(alias) = self.consume() {
+                    expr = Expression::Alias {
+                        expr: Box::new(expr),
+                        alias,
+                    };
+                }
+            }
+
+            projection.push(expr);
 
             if matches!(self.peek(), Token::Comma) {
                 self.consume();
@@ -676,21 +700,54 @@ impl Parser {
             let query = Box::new(self.parse_statement()?);
             self.expect(Token::RightParen)?;
 
-            // Alias is required for subqueries
-            self.expect(Token::As)?;
-            if let Token::Identifier(alias) = self.consume() {
-                Ok(TableReference::Subquery { query, alias })
+            // Alias for subqueries (AS is optional)
+            let alias = if matches!(self.peek(), Token::As) {
+                self.consume();
+                if let Token::Identifier(alias) = self.consume() {
+                    alias
+                } else {
+                    return Err(ParseError {
+                        message: "Expected alias after AS".to_string(),
+                        position: self.position,
+                        line: 0,
+                        column: 0,
+                    });
+                }
+            } else if let Token::Identifier(alias) = self.peek() {
+                if !self.is_keyword() {
+                    self.consume();
+                    if let Token::Identifier(a) = self.tokens.get(self.position - 1).unwrap_or(&Token::Eof) {
+                        a.clone()
+                    } else {
+                        return Err(ParseError {
+                            message: "Expected alias for subquery".to_string(),
+                            position: self.position,
+                            line: 0,
+                            column: 0,
+                        });
+                    }
+                } else {
+                    return Err(ParseError {
+                        message: "Subquery requires an alias".to_string(),
+                        position: self.position,
+                        line: 0,
+                        column: 0,
+                    });
+                }
             } else {
-                Err(ParseError {
-                    message: "Expected alias after subquery".to_string(),
+                return Err(ParseError {
+                    message: "Subquery requires an alias".to_string(),
                     position: self.position,
                     line: 0,
                     column: 0,
-                })
-            }
+                });
+            };
+
+            Ok(TableReference::Subquery { query, alias })
         } else if let Token::Identifier(name) = self.consume() {
-            // Table name
+            // Table name with optional alias
             let alias = if matches!(self.peek(), Token::As) {
+                // Explicit AS alias
                 self.consume();
                 if let Token::Identifier(alias) = self.consume() {
                     Some(alias)
@@ -701,6 +758,13 @@ impl Parser {
                         line: 0,
                         column: 0,
                     });
+                }
+            } else if matches!(self.peek(), Token::Identifier(_)) && !self.is_keyword() {
+                // Implicit alias (identifier right after table name)
+                if let Token::Identifier(alias) = self.consume() {
+                    Some(alias)
+                } else {
+                    None
                 }
             } else {
                 None
@@ -718,6 +782,26 @@ impl Parser {
     }
 
     /// Check if current token is a JOIN keyword
+    /// Check if current token is a SQL keyword (not an identifier we can use as alias)
+    fn is_keyword(&self) -> bool {
+        matches!(
+            self.peek(),
+            Token::Select | Token::Insert | Token::Update | Token::Delete |
+            Token::From | Token::Where | Token::Join | Token::Inner | Token::Left |
+            Token::Right | Token::Full | Token::Outer | Token::On | Token::Group |
+            Token::By | Token::Having | Token::Order | Token::Limit | Token::Offset |
+            Token::And | Token::Or | Token::Not | Token::In | Token::Is | Token::Like |
+            Token::Between | Token::Null | Token::As |
+            Token::Create | Token::Drop | Token::Alter | Token::Table | Token::Database |
+            Token::Index | Token::Primary | Token::Key | Token::Foreign | Token::References |
+            Token::Unique | Token::Default | Token::Values | Token::Set | Token::Into |
+            Token::Begin | Token::Commit | Token::Rollback | Token::Distinct | Token::All |
+            Token::Union | Token::Case | Token::When |
+            Token::Then | Token::Else | Token::End |
+            Token::If | Token::Exists
+        )
+    }
+
     fn is_join_keyword(&self) -> bool {
         matches!(
             self.peek(),
@@ -2047,9 +2131,6 @@ impl SqlPrettyPrinter {
         result
     }
 
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 #[cfg(test)]
@@ -2185,46 +2266,6 @@ mod tests {
         }
     }
 }
-
-//     } else {
-//         return Err(ParseError {
-//             message: "Expected table name".to_string(),
-//             position: self.position,
-//             line: 0,
-//             column: 0,
-//         });
-//     };
-
-//     self.expect(Token::LeftParen)?;
-
-//     let mut columns = Vec::new();
-//     let mut constraints = Vec::new();
-
-//     loop {
-//         // Check if this is a table constraint
-//         if self.is_table_constraint() {
-//             constraints.push(self.parse_table_constraint()?);
-//         } else {
-//             // Column definition
-//             columns.push(self.parse_column_definition()?);
-//         }
-
-//         if matches!(self.peek(), Token::Comma) {
-//             self.consume();
-//         } else {
-//             break;
-//         }
-//     }
-
-//     self.expect(Token::RightParen)?;
-
-//     Ok(Statement::CreateTable {
-//         name,
-//         columns,
-//         constraints,
-//         if_not_exists,
-//     })
-// }
 
 impl Parser {
     /// Parse column definition

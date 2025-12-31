@@ -5,7 +5,7 @@ use std::{
 };
 use toml;
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct NetworkConfig {
     #[serde(default = "default_bind_address")]
     pub bind_address: String,
@@ -17,7 +17,7 @@ pub struct NetworkConfig {
     pub connection_timeout_ms: u32,
 }
 
-#[derive(Debug, Deserialize, Serialize, Default)]
+#[derive(Debug, Deserialize, Serialize, Default, Clone)]
 pub struct ResourceConfig {
     #[serde(default = "default_max_io_rate")]
     pub max_disk_io_rate: u32,
@@ -33,9 +33,12 @@ pub struct ResourceConfig {
 
     #[serde(default = "default_max_ram_usage")]
     pub max_ram_usage: f64,
+
+    #[serde(default = "default_resource_path")]
+    pub default_path: String,
 }
 
-#[derive(Debug, Deserialize, Serialize, Default)]
+#[derive(Debug, Deserialize, Serialize, Default, Clone)]
 pub struct ReplicationConfig {
     #[serde(default = "default_replication_mode")]
     pub mode: String,
@@ -46,7 +49,33 @@ pub struct ReplicationConfig {
     pub auto_failover_enabled: bool,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct PoolConfig {
+    #[serde(default = "default_min_connections")]
+    pub min_connections: u32,
+
+    #[serde(default = "default_max_pool_connections")]
+    pub max_connections: u32,
+
+    #[serde(default = "default_connection_timeout")]
+    pub connection_timeout_ms: u64,
+
+    #[serde(default = "default_idle_timeout")]
+    pub idle_timeout_ms: u64,
+}
+
+impl Default for PoolConfig {
+    fn default() -> Self {
+        Self {
+            min_connections: default_min_connections(),
+            max_connections: default_max_pool_connections(),
+            connection_timeout_ms: default_connection_timeout(),
+            idle_timeout_ms: default_idle_timeout(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Config {
     #[serde(default = "default_name")]
     pub name: String,
@@ -61,7 +90,10 @@ pub struct Config {
     pub replication: ReplicationConfig,
 
     #[serde(default = "default_resource")]
-    pub resource: ResourceConfig, // Mapped to [resource] in TOML
+    pub resource: ResourceConfig,
+
+    #[serde(default = "default_pool")]
+    pub pool: PoolConfig,
 }
 
 pub fn get_config() -> Result<Config, Box<dyn std::error::Error>> {
@@ -86,6 +118,13 @@ impl Display for Config {
 }
 
 // --- Default Functions (Necessary for serde(default = "...")) ---
+//
+//
+
+fn default_resource_path() -> String {
+    "./".to_string()
+}
+
 fn default_name() -> String {
     "Butterfly_DB".to_string()
 }
@@ -135,4 +174,21 @@ fn default_replication() -> ReplicationConfig {
 
 fn default_max_ram_usage() -> f64 {
     500.0
+}
+
+// Pool defaults
+fn default_min_connections() -> u32 {
+    5
+}
+fn default_max_pool_connections() -> u32 {
+    100
+}
+fn default_connection_timeout() -> u64 {
+    5000
+}
+fn default_idle_timeout() -> u64 {
+    60000
+}
+fn default_pool() -> PoolConfig {
+    PoolConfig::default()
 }
