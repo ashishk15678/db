@@ -185,6 +185,11 @@ impl Aes {
     /// Applies the InvShiftRows transformation.
     fn inv_shift_rows(state: &mut [u8; 16]) {
         let mut temp = [0u8; 16];
+        //  [ 1 2 3 4 ]              [ 1 13 11 8 ]
+        //  [ 5 6 7 8 ]       ==>    [ 5  2 3 12 ]
+        //  [ 9 10 11 12 ]           [ 9  6 7 16 ]
+        //  [ 13 14 15 16]           [ 13 10 15 4]
+
         temp[0] = state[0];
         temp[4] = state[4];
         temp[8] = state[8];
