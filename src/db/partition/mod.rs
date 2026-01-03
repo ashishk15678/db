@@ -1,16 +1,15 @@
 use crate::{
-    db::http::{HttpResponse, handleClient},
-    error,
-    hashing::aes,
-    info, warn,
+    db::{
+        http::{handleClient, HttpResponse},
+        tcp::start_tcp_server,
+    },
+    error, info, warn,
 };
 use rand::Rng;
 use std::{
     collections::BTreeMap,
     fs::OpenOptions,
     io::Error,
-    net::{TcpListener, TcpStream},
-    ops::Deref,
     path::Path,
     process::exit,
     sync::{Arc, Mutex},
@@ -39,66 +38,16 @@ pub struct DataBaseClient {
     throttle: u32,
 }
 
-// --------------------------------------------------------------------------------
-// Implementations ----------------------------------------------------------------
 impl PartitionServer {
     async fn start(&self) -> Result<(), Error> {
-        // Construct the address string
-        // Using `SocketAddr` is generally safer and more robust than string formatting
-        let addr: SocketAddr = format!("0.0.0.0:{}", self.port)
-            .parse()
-            .expect("Invalid address");
-
-        // Attempt to bind to the port. The `bind` call itself checks for availability.
-        let listener = match TcpListener::bind(addr) {
-            Ok(listener) => {
-                info!(format!("Server listening on {}", addr));
-                listener
-            }
-            Err(e) => {
-                error!(format!("Failed to bind to port {}: {}", self.port, e));
-                // Propagate the error so the calling function can handle it.
-                // Panicking is often not the best strategy for a recoverable error.
-                return Err(e);
-            }
-        };
-
-        if self.leader_port == self.port {
-            // we assume that file iis already created
-            PartitionServer::leader_initialize().await?;
-            let file_path = Path::new("~/data/__leader.db");
-            let mut file = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(file_path)?;
-        } else {
-            match PartitionServer::initialize().await {
-                Ok(_) => {}
-                Err(e) => eprint!("ERROR at initialization of partition servers\n , {}", e),
-            };
-        }
-
-        // The loop is where accept and handle incoming connections
-        loop {
-            // `accept()` waits for a client to connect. It returns a Result<(TcpStream, SocketAddr), Error>.
-            let (stream, remote_addr) = listener.accept().unwrap();
-            println!("Accepted connection from: {}", remote_addr);
-            print!("Handling client now");
-            handleClient(stream).await?;
-        }
-
-        #[allow(unreachable_code)]
-        Ok(())
-    }
-
-    async fn leader_initialize() -> Result<(), Error> {
+        let addr = format!("0.0.0.0:{}", self.port);
+        let _ = start_tcp_server(addr).await;
         Ok(())
     }
 
     async fn initialize() -> Result<(), Error> {
         let partition_key: usize =
             rand::rng().random_range(usize::max_value() / 10..usize::max_value());
-        let hashed_partition_key = aes::Aes::new(&partition_key.to_be_bytes());
 
         // this redundancy of code i.e. 3 paths just to make a file is because of lifetime issue
         let f = format!("~/data/{}.db", partition_key);

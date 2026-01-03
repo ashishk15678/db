@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+bincode = "1.3"
 chrono = "0.4.41"
 colored = "3.0.0"
 lazy_static = "1.4.0"

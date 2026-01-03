@@ -56,11 +56,43 @@ curl http://localhost:1231/tables
 
 ## Data Persistence
 
-Data is automatically saved to `~/.butterfly_db/`:
-- `catalog.json` - Table schemas and metadata
-- `data.json` - Table row data
+Data is stored using B+ trees in `~/.butterfly_db/data/`:
+- Each table has its own `.db` file
+- Binary format with bincode serialization
+- Data persists across server restarts
 
-Data persists across server restarts.
+## Performance Benchmark
+
+Compare butterfly_db against SQLite3:
+
+```bash
+# Run with default 100 records
+./examples/benchmark.sh
+
+# Run with custom record count
+./examples/benchmark.sh 500
+```
+
+Sample output:
+```
+========================================
+  RESULTS (100 records)
+========================================
+
+Operation                    butterfly_db         SQLite3
+------------------------- --------------- ---------------
+INSERT (100 rows)                0.980s        0.580s
+INSERT rate                        102/s          172/s
+SELECT * (all rows)              0.010s        0.003s
+SELECT WHERE                     0.009s        0.004s
+
+=== Analysis ===
+INSERT: SQLite is 1.69x faster
+SELECT: SQLite is 3.33x faster
+
+Note: butterfly_db uses HTTP which adds network overhead.
+SQLite uses direct file I/O which is faster for local ops.
+```
 
 ## Configuration
 

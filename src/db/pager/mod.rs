@@ -49,12 +49,12 @@ pub struct Page {
 impl Page {
     pub fn read_data(&self, offset: usize, buffer: &mut [u8]) -> Result<(), std::io::Error> {
         let mut cursor = Cursor::new(&self.data[offset..]);
-        Ok(cursor.read_exact(buffer)?)
+        cursor.read_exact(buffer)
     }
 
     pub fn write_data(&mut self, offset: usize, buffer: &mut [u8]) -> Result<(), std::io::Error> {
         let mut cursor = Cursor::new(&mut self.data[offset..]);
-        Ok(cursor.write_all(buffer)?)
+        cursor.write_all(buffer)
     }
 }
 
