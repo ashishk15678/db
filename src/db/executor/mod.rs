@@ -51,8 +51,8 @@ impl Executor {
             Statement::Insert { table, columns, values } => {
                 Self::execute_insert(table, columns.as_ref(), values)
             }
-            Statement::Select { projection, from, where_clause, limit, .. } => {
-                Self::execute_select(projection, from.as_ref(), where_clause.as_ref(), *limit)
+            Statement::Select { projection, from, joins, where_clause, limit, .. } => {
+                Self::execute_select(projection, from.as_ref(), joins, where_clause.as_ref(), *limit)
             }
             Statement::Update { table, assignments, where_clause } => {
                 Self::execute_update(table, assignments, where_clause.as_ref())
@@ -168,9 +168,15 @@ impl Executor {
     fn execute_select(
         projection: &[Expression],
         from: Option<&TableReference>,
+        joins: &[crate::db::sql::constants::Join],
         where_clause: Option<&Expression>,
         limit: Option<u64>,
     ) -> ExecutionResult {
+        // If we have joins, handle them separately
+        if !joins.is_empty() {
+            return Self::execute_with_joins(projection, from, joins, where_clause, limit);
+        }
+
         let table_name = match from {
             Some(TableReference::Table { name, .. }) => name.as_str(),
             Some(TableReference::Subquery { .. }) => {
@@ -195,15 +201,8 @@ impl Executor {
             }
         };
 
-        // Get columns to select
-        let col_names: Vec<String> = projection
-            .iter()
-            .filter_map(|expr| match expr {
-                Expression::Identifier(name) => Some(name.clone()),
-                Expression::QualifiedColumn { column, .. } => Some(column.clone()),
-                _ => None,
-            })
-            .collect();
+        // Get columns for storage query (empty = all)
+        let col_names: Vec<String> = vec![];
 
         // Create predicate from WHERE clause
         let predicate = |row: &Row| -> bool {
@@ -215,31 +214,307 @@ impl Executor {
 
         match STORAGE.select(table_name, &col_names, predicate) {
             Ok(mut rows) => {
+                // Check if we have aggregate functions
+                if Self::has_aggregates(projection) {
+                    // Compute aggregates over all rows
+                    let mut result_row: HashMap<String, serde_json::Value> = HashMap::new();
+                    let mut columns: Vec<String> = Vec::new();
+                    
+                    for (i, expr) in projection.iter().enumerate() {
+                        let (col_name, value) = Self::eval_projection_expr(expr, &rows, i);
+                        columns.push(col_name.clone());
+                        result_row.insert(col_name, Self::value_to_json(&value));
+                    }
+                    
+                    return ExecutionResult::Rows {
+                        columns,
+                        rows: vec![result_row],
+                    };
+                }
+
                 // Apply limit
                 if let Some(lim) = limit {
                     rows.truncate(lim as usize);
                 }
 
-                // Convert to JSON-friendly format
-                let json_rows: Vec<HashMap<String, serde_json::Value>> = rows
-                    .into_iter()
-                    .map(|row| {
-                        row.into_iter()
-                            .map(|(k, v)| (k, Self::value_to_json(&v)))
-                            .collect()
-                    })
-                    .collect();
+                // Build result rows with projection
+                let mut result_rows: Vec<HashMap<String, serde_json::Value>> = Vec::new();
+                let mut columns: Vec<String> = Vec::new();
+                let mut columns_set = false;
+                
+                for row in &rows {
+                    let mut result_row: HashMap<String, serde_json::Value> = HashMap::new();
+                    
+                    for (i, expr) in projection.iter().enumerate() {
+                        let col_name = Self::get_expr_name(expr, i);
+                        if !columns_set {
+                            columns.push(col_name.clone());
+                        }
+                        
+                        // Handle * (select all)
+                        if matches!(expr, Expression::Identifier(s) if s == "*") {
+                            for (k, v) in row.iter() {
+                                result_row.insert(k.clone(), Self::value_to_json(v));
+                            }
+                        } else {
+                            let value = Self::eval_expression(expr, row);
+                            result_row.insert(col_name, Self::value_to_json(&value));
+                        }
+                    }
+                    
+                    // For *, override columns with actual column names
+                    if !columns_set && projection.iter().any(|e| matches!(e, Expression::Identifier(s) if s == "*")) {
+                        columns = result_row.keys().cloned().collect();
+                    }
+                    
+                    columns_set = true;
+                    result_rows.push(result_row);
+                }
 
-                let columns = if col_names.is_empty() || col_names.contains(&"*".to_string()) {
-                    json_rows.first().map(|r| r.keys().cloned().collect()).unwrap_or_default()
-                } else {
-                    col_names
-                };
-
-                ExecutionResult::Rows { columns, rows: json_rows }
+                ExecutionResult::Rows { columns, rows: result_rows }
             }
             Err(e) => ExecutionResult::Error { message: e },
         }
+    }
+
+    /// Evaluate a projection expression (handles aggregates)
+    fn eval_projection_expr(expr: &Expression, rows: &[Row], idx: usize) -> (String, Value) {
+        match expr {
+            Expression::Function { name, args } if Self::is_aggregate_expr(expr) => {
+                let col_name = Self::get_expr_name(expr, idx);
+                let arg = args.first().cloned().unwrap_or(Expression::Identifier("*".to_string()));
+                let value = Self::eval_aggregate(name, &arg, rows);
+                (col_name, value)
+            }
+            Expression::Alias { expr: inner, alias } => {
+                let (_, value) = Self::eval_projection_expr(inner, rows, idx);
+                (alias.clone(), value)
+            }
+            _ => {
+                let col_name = Self::get_expr_name(expr, idx);
+                let value = if rows.is_empty() {
+                    Value::Null
+                } else {
+                    Self::eval_expression(expr, &rows[0])
+                };
+                (col_name, value)
+            }
+        }
+    }
+
+    /// Get column name from expression
+    fn get_expr_name(expr: &Expression, idx: usize) -> String {
+        match expr {
+            Expression::Identifier(name) => name.clone(),
+            Expression::QualifiedColumn { column, .. } => column.clone(),
+            Expression::Function { name, args } => {
+                let arg_str = args.first().map(|a| match a {
+                    Expression::Identifier(s) => s.clone(),
+                    Expression::QualifiedColumn { column, .. } => column.clone(),
+                    _ => "*".to_string(),
+                }).unwrap_or("*".to_string());
+                format!("{}({})", name.to_lowercase(), arg_str)
+            }
+            Expression::Alias { alias, .. } => alias.clone(),
+            _ => format!("column{}", idx),
+        }
+    }
+
+    /// Execute a SELECT query with JOINs
+    fn execute_with_joins(
+        projection: &[Expression],
+        from: Option<&TableReference>,
+        joins: &[crate::db::sql::constants::Join],
+        where_clause: Option<&Expression>,
+        limit: Option<u64>,
+    ) -> ExecutionResult {
+        use crate::db::sql::constants::JoinType;
+
+        // 1. Start with the FROM table
+        let from_table_name = match from {
+            Some(TableReference::Table { name, .. }) => name.as_str(),
+            Some(TableReference::Subquery { .. }) => return ExecutionResult::Error { message: "Subqueries not supported in FROM".to_string() },
+            None => return ExecutionResult::Error { message: "JOIN require a FROM table".to_string() },
+        };
+
+        // Load initial rows
+        let mut current_rows = match STORAGE.select(from_table_name, &[], |_| true) {
+            Ok(rows) => rows,
+            Err(e) => return ExecutionResult::Error { message: e },
+        };
+
+        // 2. Iterate through JOINs
+        for join in joins {
+            let right_table_name = match &join.table {
+                TableReference::Table { name, alias } => alias.as_ref().unwrap_or(name).as_str(),
+                _ => return ExecutionResult::Error { message: "Complex join tables not supported".to_string() },
+            };
+
+            let right_rows = match STORAGE.select(right_table_name, &[], |_| true) {
+                Ok(rows) => rows,
+                Err(e) => return ExecutionResult::Error { message: e },
+            };
+
+            let mut new_rows: Vec<Row> = Vec::new();
+
+            match join.join_type {
+                JoinType::Inner | JoinType::Cross => {
+                    for left_row in &current_rows {
+                        for right_row in &right_rows {
+                            let mut merged = left_row.clone();
+                            // Prefix right table columns
+                            for (k, v) in right_row {
+                                merged.insert(format!("{}_{}", right_table_name, k), v.clone());
+                            }
+
+                            if let Some(on_cond) = &join.condition {
+                                if Self::eval_condition(on_cond, &merged) {
+                                    new_rows.push(merged);
+                                }
+                            } else {
+                                // CROSS JOIN (no condition)
+                                new_rows.push(merged);
+                            }
+                        }
+                    }
+                }
+                JoinType::Left => {
+                    for left_row in &current_rows {
+                        let mut matched = false;
+                        for right_row in &right_rows {
+                            let mut merged = left_row.clone();
+                            for (k, v) in right_row {
+                                merged.insert(format!("{}_{}", right_table_name, k), v.clone());
+                            }
+
+                            let matches = match &join.condition {
+                                Some(cond) => Self::eval_condition(cond, &merged),
+                                None => true,
+                            };
+
+                            if matches {
+                                matched = true;
+                                new_rows.push(merged);
+                            }
+                        }
+
+                        if !matched {
+                            let mut merged = left_row.clone();
+                            // Add NULLs for right table columns
+                            if let Some(schema) = Self::result_columns_for_table(right_table_name) {
+                                for col in schema {
+                                    merged.insert(format!("{}_{}", right_table_name, col), Value::Null);
+                                }
+                            } else if let Some(first) = right_rows.first() {
+                                // Fallback: check first row for columns
+                                for k in first.keys() {
+                                    merged.insert(format!("{}_{}", right_table_name, k), Value::Null);
+                                }
+                            }
+                            new_rows.push(merged);
+                        }
+                    }
+                }
+                JoinType::Right => {
+                    // Simulating RIGHT Join is expensive here as we iterate left-to-right
+                    // Simplified implementation: Iterate right rows and look for matches in left
+                    for right_row in &right_rows {
+                        let mut matched = false;
+                        for left_row in &current_rows {
+                             let mut merged = left_row.clone();
+                             for (k, v) in right_row {
+                                 merged.insert(format!("{}_{}", right_table_name, k), v.clone());
+                             }
+                             
+                             let matches = match &join.condition {
+                                Some(cond) => Self::eval_condition(cond, &merged),
+                                None => true,
+                             };
+                             
+                             if matches {
+                                 matched = true;
+                                 new_rows.push(merged);
+                             }
+                        }
+
+                        if !matched {
+                            let mut merged = Row::new();
+                             // Add NULLs for left keys? This is tricky as "current_rows" might be composite from previous joins.
+                             if let Some(first_left) = current_rows.first() {
+                                 for k in first_left.keys() {
+                                     merged.insert(k.clone(), Value::Null);
+                                 }
+                             }
+                             for (k, v) in right_row {
+                                 merged.insert(format!("{}_{}", right_table_name, k), v.clone());
+                             }
+                             new_rows.push(merged);
+                        }
+                    }
+                }
+                _ => return ExecutionResult::Error { message: "Join type not supported".to_string() },
+            }
+            current_rows = new_rows;
+        }
+
+        // 3. Apply WHERE and Projection
+        if let Some(where_expr) = where_clause {
+            current_rows.retain(|row| Self::eval_condition(where_expr, row));
+        }
+
+        // Apply aggregate logic or simple projection
+        if Self::has_aggregates(projection) {
+            let mut result_row: HashMap<String, serde_json::Value> = HashMap::new();
+            let mut columns: Vec<String> = Vec::new();
+            
+            for (i, expr) in projection.iter().enumerate() {
+                let (col_name, value) = Self::eval_projection_expr(expr, &current_rows, i);
+                columns.push(col_name.clone());
+                result_row.insert(col_name, Self::value_to_json(&value));
+            }
+            
+            return ExecutionResult::Rows {
+                columns,
+                rows: vec![result_row],
+            };
+        }
+
+        if let Some(lim) = limit {
+            current_rows.truncate(lim as usize);
+        }
+
+        let mut json_rows: Vec<HashMap<String, serde_json::Value>> = Vec::new();
+        let mut columns: Vec<String> = Vec::new();
+        let mut columns_set = false;
+        
+        for row in &current_rows {
+            let mut result_row: HashMap<String, serde_json::Value> = HashMap::new();
+            for (i, expr) in projection.iter().enumerate() {
+                let col_name = Self::get_expr_name(expr, i);
+                if !columns_set { columns.push(col_name.clone()); }
+                
+                 if matches!(expr, Expression::Identifier(s) if s == "*") {
+                    for (k, v) in row.iter() {
+                        result_row.insert(k.clone(), Self::value_to_json(v));
+                    }
+                } else {
+                    let value = Self::eval_expression(expr, row);
+                    result_row.insert(col_name, Self::value_to_json(&value));
+                }
+            }
+            if !columns_set && projection.iter().any(|e| matches!(e, Expression::Identifier(s) if s == "*")) {
+                 columns = result_row.keys().cloned().collect();
+            }
+            columns_set = true;
+            json_rows.push(result_row);
+        }
+
+        ExecutionResult::Rows { columns, rows: json_rows }
+    }
+
+    /// Helper - stub for table schema retrieval
+    fn result_columns_for_table(_table: &str) -> Option<Vec<String>> {
+        None
     }
 
     fn execute_update(
@@ -290,15 +565,192 @@ impl Executor {
             Expression::Identifier(name) => {
                 row.get(name).cloned().unwrap_or(Value::Null)
             }
-            Expression::QualifiedColumn { column, .. } => {
-                row.get(column).cloned().unwrap_or(Value::Null)
+            Expression::QualifiedColumn { table, column } => {
+                if let Some(v) = row.get(&format!("{}_{}", table, column)) {
+                    v.clone()
+                } else if let Some(v) = row.get(column) {
+                    v.clone()
+                } else {
+                    Value::Null
+                }
             }
             Expression::BinaryOp { left, operator, right } => {
                 let l = Self::eval_expression(left, row);
                 let r = Self::eval_expression(right, row);
                 Self::eval_binary_op(&l, operator, &r)
             }
+            Expression::Function { name, args } => {
+                // Handle aggregate functions - they need special treatment in SELECT
+                // For now, return placeholder that will be computed over rows
+                let func_name = name.to_uppercase();
+                match func_name.as_str() {
+                    "COUNT" | "SUM" | "AVG" | "MIN" | "MAX" => {
+                        // Aggregates - return the first arg value for now
+                        // Real aggregation happens in execute_select_with_aggregates
+                        if args.is_empty() {
+                            Value::Integer(0)
+                        } else {
+                            Self::eval_expression(&args[0], row)
+                        }
+                    }
+                    "UPPER" => {
+                        if let Some(arg) = args.first() {
+                            if let Value::Text(s) = Self::eval_expression(arg, row) {
+                                return Value::Text(s.to_uppercase());
+                            }
+                        }
+                        Value::Null
+                    }
+                    "LOWER" => {
+                        if let Some(arg) = args.first() {
+                            if let Value::Text(s) = Self::eval_expression(arg, row) {
+                                return Value::Text(s.to_lowercase());
+                            }
+                        }
+                        Value::Null
+                    }
+                    "LENGTH" => {
+                        if let Some(arg) = args.first() {
+                            if let Value::Text(s) = Self::eval_expression(arg, row) {
+                                return Value::Integer(s.len() as i64);
+                            }
+                        }
+                        Value::Null
+                    }
+                    "ABS" => {
+                        if let Some(arg) = args.first() {
+                            match Self::eval_expression(arg, row) {
+                                Value::Integer(i) => return Value::Integer(i.abs()),
+                                Value::Float(f) => return Value::Float(f.abs()),
+                                _ => {}
+                            }
+                        }
+                        Value::Null
+                    }
+                    _ => Value::Null,
+                }
+            }
+            Expression::Alias { expr, .. } => {
+                Self::eval_expression(expr, row)
+            }
             _ => Value::Null,
+        }
+    }
+
+    /// Evaluate aggregate function over a set of rows
+    pub fn eval_aggregate(func_name: &str, arg: &Expression, rows: &[Row]) -> Value {
+        let func = func_name.to_uppercase();
+        match func.as_str() {
+            "COUNT" => {
+                // COUNT(*) counts all rows, COUNT(col) counts non-null values
+                if matches!(arg, Expression::Identifier(s) if s == "*") {
+                    Value::Integer(rows.len() as i64)
+                } else {
+                    let count = rows.iter()
+                        .filter(|row| !matches!(Self::eval_expression(arg, row), Value::Null))
+                        .count();
+                    Value::Integer(count as i64)
+                }
+            }
+            "SUM" => {
+                let mut sum_int: i64 = 0;
+                let mut sum_float: f64 = 0.0;
+                let mut is_float = false;
+                
+                for row in rows {
+                    match Self::eval_expression(arg, row) {
+                        Value::Integer(i) => sum_int += i,
+                        Value::Float(f) => {
+                            is_float = true;
+                            sum_float += f;
+                        }
+                        _ => {}
+                    }
+                }
+                
+                if is_float {
+                    Value::Float(sum_float + sum_int as f64)
+                } else {
+                    Value::Integer(sum_int)
+                }
+            }
+            "AVG" => {
+                let mut sum: f64 = 0.0;
+                let mut count = 0;
+                
+                for row in rows {
+                    match Self::eval_expression(arg, row) {
+                        Value::Integer(i) => {
+                            sum += i as f64;
+                            count += 1;
+                        }
+                        Value::Float(f) => {
+                            sum += f;
+                            count += 1;
+                        }
+                        _ => {}
+                    }
+                }
+                
+                if count > 0 {
+                    Value::Float(sum / count as f64)
+                } else {
+                    Value::Null
+                }
+            }
+            "MIN" => {
+                let mut min_val: Option<Value> = None;
+                
+                for row in rows {
+                    let val = Self::eval_expression(arg, row);
+                    if matches!(val, Value::Null) {
+                        continue;
+                    }
+                    min_val = Some(match &min_val {
+                        None => val,
+                        Some(current) => {
+                            if Self::compare(&val, current) < 0 { val } else { current.clone() }
+                        }
+                    });
+                }
+                
+                min_val.unwrap_or(Value::Null)
+            }
+            "MAX" => {
+                let mut max_val: Option<Value> = None;
+                
+                for row in rows {
+                    let val = Self::eval_expression(arg, row);
+                    if matches!(val, Value::Null) {
+                        continue;
+                    }
+                    max_val = Some(match &max_val {
+                        None => val,
+                        Some(current) => {
+                            if Self::compare(&val, current) > 0 { val } else { current.clone() }
+                        }
+                    });
+                }
+                
+                max_val.unwrap_or(Value::Null)
+            }
+            _ => Value::Null,
+        }
+    }
+
+    /// Check if projection contains aggregate functions
+    fn has_aggregates(projection: &[Expression]) -> bool {
+        projection.iter().any(|expr| Self::is_aggregate_expr(expr))
+    }
+
+    fn is_aggregate_expr(expr: &Expression) -> bool {
+        match expr {
+            Expression::Function { name, .. } => {
+                let n = name.to_uppercase();
+                matches!(n.as_str(), "COUNT" | "SUM" | "AVG" | "MIN" | "MAX")
+            }
+            Expression::Alias { expr, .. } => Self::is_aggregate_expr(expr),
+            _ => false,
         }
     }
 

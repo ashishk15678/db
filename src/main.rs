@@ -1,14 +1,13 @@
 use crate::{
-    config::{Config, get_config},
+    config::{get_config, Config},
     db::{admission_control::can_take_task, partition::DataBaseClient},
     init::INIT,
 };
 #[allow(unused_imports)]
 use std::env;
-pub mod DS;
+
 pub mod config;
 pub mod db;
-pub mod hashing;
 pub mod init;
 pub mod log;
 pub mod pools;

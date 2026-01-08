@@ -4,14 +4,13 @@ pub mod parser;
 
 // Re-export key types for external use
 pub use constants::{
-    Statement, Token, ParseError, Literal, BinaryOperator, UnaryOperator,
-    JoinType, OrderDirection, ColumnDef, ColumnConstraint, TableReference,
-    Join, OrderBy, Assignment, TableConstraint, AlterAction, TransactionStatement,
-    Tokenizer,
+    AlterAction, Assignment, BinaryOperator, ColumnConstraint, ColumnDef, Join, JoinType, Literal,
+    OrderBy, OrderDirection, ParseError, Statement, TableConstraint, TableReference, Token,
+    Tokenizer, TransactionStatement, UnaryOperator,
 };
-pub use parser::{SqlParser, Expression, DataType};
+pub use parser::{DataType, Expression, SqlParser};
 
-use crate::db::executor::{Executor, ExecutionResult};
+use crate::db::executor::{ExecutionResult, Executor};
 
 /// Execute a SQL query string and return the result
 pub fn execute_sql(query: &str) -> ExecutionResult {
@@ -23,9 +22,6 @@ pub fn execute_sql(query: &str) -> ExecutionResult {
                     message: "No SQL statements found".to_string(),
                 };
             }
-            
-            // Execute each statement (for now, just the first one)
-            // In the future, we could support multi-statement execution
             let stmt = &statements[0];
             Executor::execute(stmt)
         }
@@ -67,7 +63,7 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    #[test]  
+    #[test]
     fn test_parse_sql_insert() {
         let result = parse_sql("INSERT INTO users (id, name) VALUES (1, 'Alice')");
         assert!(result.is_ok());
@@ -77,7 +73,7 @@ mod tests {
     fn test_parse_sql_create_table() {
         let result = parse_sql("CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR(255))");
         assert!(result.is_ok());
-        
+
         let stmts = result.unwrap();
         assert!(matches!(stmts[0], Statement::CreateTable { .. }));
     }
@@ -86,7 +82,7 @@ mod tests {
     fn test_parse_sql_create_database() {
         let result = parse_sql("CREATE DATABASE mydb");
         assert!(result.is_ok());
-        
+
         let stmts = result.unwrap();
         assert!(matches!(stmts[0], Statement::CreateDatabase { .. }));
     }

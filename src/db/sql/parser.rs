@@ -716,7 +716,9 @@ impl Parser {
             } else if let Token::Identifier(alias) = self.peek() {
                 if !self.is_keyword() {
                     self.consume();
-                    if let Token::Identifier(a) = self.tokens.get(self.position - 1).unwrap_or(&Token::Eof) {
+                    if let Token::Identifier(a) =
+                        self.tokens.get(self.position - 1).unwrap_or(&Token::Eof)
+                    {
                         a.clone()
                     } else {
                         return Err(ParseError {
@@ -786,19 +788,62 @@ impl Parser {
     fn is_keyword(&self) -> bool {
         matches!(
             self.peek(),
-            Token::Select | Token::Insert | Token::Update | Token::Delete |
-            Token::From | Token::Where | Token::Join | Token::Inner | Token::Left |
-            Token::Right | Token::Full | Token::Outer | Token::On | Token::Group |
-            Token::By | Token::Having | Token::Order | Token::Limit | Token::Offset |
-            Token::And | Token::Or | Token::Not | Token::In | Token::Is | Token::Like |
-            Token::Between | Token::Null | Token::As |
-            Token::Create | Token::Drop | Token::Alter | Token::Table | Token::Database |
-            Token::Index | Token::Primary | Token::Key | Token::Foreign | Token::References |
-            Token::Unique | Token::Default | Token::Values | Token::Set | Token::Into |
-            Token::Begin | Token::Commit | Token::Rollback | Token::Distinct | Token::All |
-            Token::Union | Token::Case | Token::When |
-            Token::Then | Token::Else | Token::End |
-            Token::If | Token::Exists
+            Token::Select
+                | Token::Insert
+                | Token::Update
+                | Token::Delete
+                | Token::From
+                | Token::Where
+                | Token::Join
+                | Token::Inner
+                | Token::Left
+                | Token::Right
+                | Token::Full
+                | Token::Outer
+                | Token::On
+                | Token::Group
+                | Token::By
+                | Token::Having
+                | Token::Order
+                | Token::Limit
+                | Token::Offset
+                | Token::And
+                | Token::Or
+                | Token::Not
+                | Token::In
+                | Token::Is
+                | Token::Like
+                | Token::Between
+                | Token::Null
+                | Token::As
+                | Token::Create
+                | Token::Drop
+                | Token::Alter
+                | Token::Table
+                | Token::Database
+                | Token::Index
+                | Token::Primary
+                | Token::Key
+                | Token::Foreign
+                | Token::References
+                | Token::Unique
+                | Token::Default
+                | Token::Values
+                | Token::Set
+                | Token::Into
+                | Token::Begin
+                | Token::Commit
+                | Token::Rollback
+                | Token::Distinct
+                | Token::All
+                | Token::Union
+                | Token::Case
+                | Token::When
+                | Token::Then
+                | Token::Else
+                | Token::End
+                | Token::If
+                | Token::Exists
         )
     }
 
@@ -1789,11 +1834,8 @@ pub struct SqlParser;
 impl SqlParser {
     /// Parse SQL string into AST
     pub fn parse(input: &str) -> Result<Vec<Statement>, ParseError> {
-        // Tokenize input
         let mut tokenizer = Tokenizer::new(input);
         let tokens = tokenizer.tokenize()?;
-
-        // Parse tokens into AST
         let mut parser = Parser::new(tokens);
         parser.parse_statements()
     }
@@ -2130,7 +2172,6 @@ impl SqlPrettyPrinter {
 
         result
     }
-
 }
 
 #[cfg(test)]
