@@ -1,8 +1,5 @@
 use crate::{
-    db::{
-        http::{handleClient, HttpResponse},
-        tcp::start_tcp_server,
-    },
+    db::server::start_server,
     error, info, warn,
 };
 use rand::Rng;
@@ -14,11 +11,7 @@ use std::{
     process::exit,
     sync::{Arc, Mutex},
 };
-use std::{
-    io::{Read, Write},
-    net::SocketAddr,
-    thread,
-};
+use std::io::Write;
 use tokio::{fs, task};
 
 // ------------------------------------------------------------------------
@@ -41,8 +34,7 @@ pub struct DataBaseClient {
 impl PartitionServer {
     async fn start(&self) -> Result<(), Error> {
         let addr = format!("0.0.0.0:{}", self.port);
-        let _ = start_tcp_server(addr).await;
-        Ok(())
+        start_server(&addr).await
     }
 
     async fn initialize() -> Result<(), Error> {

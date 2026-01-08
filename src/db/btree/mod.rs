@@ -2,11 +2,12 @@
 // Leaf nodes contain actual data, internal nodes contain only keys for navigation
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
+use lru::LruCache;
 
 /// Page size in bytes (4KB)
 pub const PAGE_SIZE: usize = 4096;
@@ -19,6 +20,9 @@ pub const MAGIC: &[u8; 4] = b"BFLY";
 
 /// File header size
 pub const HEADER_SIZE: usize = PAGE_SIZE;
+
+/// Maximum pages to cache in memory (4MB with 4KB pages)
+pub const MAX_CACHE_PAGES: usize = 1024;
 
 /// Page types
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -177,8 +181,9 @@ impl DiskPage {
 pub struct Pager {
     file: File,
     header: FileHeader,
-    cache: HashMap<u64, DiskPage>,
+    cache: LruCache<u64, DiskPage>,
     path: PathBuf,
+    dirty_pages: Vec<u64>,  // Track pages that need flushing
 }
 
 impl Pager {
@@ -216,8 +221,9 @@ impl Pager {
         Ok(Self {
             file,
             header,
-            cache: HashMap::new(),
+            cache: LruCache::new(NonZeroUsize::new(MAX_CACHE_PAGES).unwrap()),
             path,
+            dirty_pages: Vec::new(),
         })
     }
 
@@ -236,7 +242,7 @@ impl Pager {
 
     /// Read a page from disk or cache
     pub fn read_page(&mut self, page_id: u64) -> std::io::Result<&DiskPage> {
-        if !self.cache.contains_key(&page_id) {
+        if !self.cache.contains(&page_id) {
             let offset = HEADER_SIZE as u64 + (page_id - 1) * PAGE_SIZE as u64;
             let mut data = vec![0u8; PAGE_SIZE];
             
@@ -256,7 +262,7 @@ impl Pager {
                 data,
             };
             
-            self.cache.insert(page_id, page);
+            self.cache.put(page_id, page);
         }
         
         Ok(self.cache.get(&page_id).unwrap())
@@ -270,7 +276,7 @@ impl Pager {
         self.file.write_all(&page.data)?;
         
         // Update cache
-        self.cache.insert(page.page_id, DiskPage {
+        self.cache.put(page.page_id, DiskPage {
             page_id: page.page_id,
             page_type: page.page_type,
             data: page.data.clone(),
@@ -310,7 +316,7 @@ impl Pager {
 
     /// Invalidate cache for a page
     pub fn invalidate(&mut self, page_id: u64) {
-        self.cache.remove(&page_id);
+        self.cache.pop(&page_id);
     }
 }
 
@@ -389,8 +395,31 @@ impl BPlusTree {
             self.insert_into_node(root_id, key, value)?;
         }
         
-        self.pager.sync()?;
+        // Note: sync() is NOT called here for performance
+        // Call sync() explicitly or use batch_insert() for durability
         Ok(())
+    }
+
+    /// Insert multiple key-value pairs with a single sync at the end
+    /// This is much faster than individual inserts for bulk operations
+    pub fn batch_insert(&mut self, entries: Vec<(Vec<u8>, Vec<u8>)>) -> std::io::Result<usize> {
+        let count = entries.len();
+        for (key, value) in entries {
+            // Use internal insert without sync
+            let root_id = self.pager.root_page();
+            let root_page = self.pager.read_page(root_id)?;
+            let root = root_page.to_node().unwrap_or_else(BPlusNode::new_leaf);
+            
+            if root.is_full() {
+                // Handle split case - simplified, just call regular insert
+                self.insert(key, value)?;
+            } else {
+                self.insert_into_node(root_id, key, value)?;
+            }
+        }
+        // Single sync at the end
+        self.pager.sync()?;
+        Ok(count)
     }
 
     fn insert_into_node(&mut self, page_id: u64, key: Vec<u8>, value: Vec<u8>) -> std::io::Result<()> {
@@ -637,6 +666,24 @@ impl SharedBPlusTree {
             .write()
             .map_err(|e| e.to_string())?
             .count()
+            .map_err(|e| e.to_string())
+    }
+
+    /// Batch insert multiple key-value pairs with single sync
+    pub fn batch_insert(&self, entries: Vec<(Vec<u8>, Vec<u8>)>) -> Result<usize, String> {
+        self.inner
+            .write()
+            .map_err(|e| e.to_string())?
+            .batch_insert(entries)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Explicitly sync changes to disk
+    pub fn sync(&self) -> Result<(), String> {
+        self.inner
+            .write()
+            .map_err(|e| e.to_string())?
+            .sync()
             .map_err(|e| e.to_string())
     }
 }

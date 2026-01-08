@@ -284,7 +284,7 @@ pub fn data_type_to_string(dt: &DataType) -> String {
 
 // Global catalog instance
 lazy_static::lazy_static! {
-    pub static ref CATALOG: Catalog = Catalog::new();
+    pub static ref CATALOG: Catalog = Catalog::default();
 }
 
 #[cfg(test)]

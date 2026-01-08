@@ -7,6 +7,7 @@ pub mod pager;
 pub mod partition;
 pub mod pool;
 pub mod process;
+pub mod server;
 pub mod sql;
 pub mod storage;
 pub mod tcp;
